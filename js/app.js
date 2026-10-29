@@ -5,7 +5,7 @@ import { UserError, todayIso } from "./base.js";
 import { CHAIN, ROLE_LABELS, STAGE_LABELS, STATE_LABELS } from "./pt.js";
 import { STATE_LABELS as RC_LABELS, money, parseAmount } from "./receipts.js";
 
-export const VERSION = "2026.10.27";
+export const VERSION = "2026.10.29";
 const $app = document.getElementById("app");
 const $sheet = document.getElementById("sheet");
 const $toast = document.getElementById("toast");
@@ -136,6 +136,7 @@ function showPinCreate() {
     const done = busy(ev.target, "Đang lưu...");
     try {
       await S.setupSession.savePin(p1);
+      keepStorage();
       S.session = S.setupSession;
       S.setupSession = null;
       showMain();
@@ -199,8 +200,9 @@ async function refresh(force = false) {
   render();
   try {
     await S.session.refreshUser();
-    const [pt, rc] = await Promise.all([S.session.readPT(), S.session.readRC()]);
-    S.data = { pt, rc };
+    const [pt, rc, wl] = await Promise.all([S.session.readPT(), S.session.readRC(),
+      S.session.user.role === "director" ? null : S.session.readWL().catch(() => null)]);
+    S.data = { pt, rc, wl };
     S.loadedAt = Date.now();
     S.error = "";
   } catch (e) {
@@ -306,7 +308,39 @@ function tasksTab() {
       <div class="section">Việc tôi đã giao (${given.length})</div>${given.map((t) => card(t, `cho ${nm(t.assignee)}`)).join("") || `<p class="empty">Chưa có.</p>`}`;
   }
   const fab = CHAIN[S.session.user.role] ? `<button class="fab" id="assign">+ Giao việc</button>` : "";
-  return seg + body + fab;
+  return todayCard() + seg + body + fab;
+}
+
+// ---------------- nhật ký «Hôm nay tôi đang làm» (mọi người trừ Giám đốc) ----------------
+function todayCard() {
+  if (S.session.user.role === "director" || !S.data.wl) return "";
+  const e = S.data.wl.mineToday();
+  if (!e) {
+    return `<button class="card today-missing" id="today"><div class="tag red">Nhật ký hôm nay</div>
+      <div class="title">Hôm nay tôi đang làm... (chưa ghi)</div><div class="meta">Bấm để ghi</div></button>`;
+  }
+  const p = e.project_id ? S.data.pt.myProjects().find((x) => x.id === e.project_id) : null;
+  const w = e.project_id ? (p ? `${p.code} ${p.name}` : e.project_id) : "Việc ngoài dự án";
+  return `<button class="card" id="today"><div class="tag green">Nhật ký hôm nay · ghi lúc ${fmtTime(e.updated_at).slice(6)}</div>
+    <div class="title">${esc(e.text)}</div><div class="meta">${esc(w)} · bấm để sửa</div></button>`;
+}
+
+function openToday() {
+  const wl = S.data.wl, e = wl.mineToday();
+  const projects = S.data.pt.myProjects();
+  const recent = wl.mine(7).filter((x) => !e || x.id !== e.id);
+  openSheet("Nhật ký hôm nay", `<p class="hint">Hôm nay ${fmtDate(todayIso())}. Ghi lại trong ngày thì nội dung được cập nhật.</p>
+    <label class="field" for="wproj">Dự án</label><select class="inp" id="wproj"><option value="">Việc ngoài dự án</option>
+      ${projects.map((p) => `<option value="${esc(p.id)}" ${e && e.project_id === p.id ? "selected" : ""}>${esc(p.code)} ${esc(p.name)}</option>`).join("")}</select>
+    <label class="field" for="wtext">Hôm nay tôi đang làm</label>
+    <textarea class="inp" id="wtext" maxlength="300" placeholder="Ví dụ: Đấu tủ điện A tại xưởng AB2">${esc(e ? e.text : "")}</textarea>
+    <button class="btn" id="wsave">Ghi</button>
+    ${recent.length ? `<div class="section">Các ngày trước</div>${recent.map((x) => `<div class="card"><div class="meta">${fmtDate(x.date)}</div><div class="note">${esc(x.text)}</div></div>`).join("")}` : ""}`);
+  document.getElementById("wsave").onclick = (ev) => {
+    const text = document.getElementById("wtext").value, pid = document.getElementById("wproj").value;
+    if (!text.trim()) { toast("Hãy ghi hôm nay bạn đang làm gì.", true); return; }
+    runEdit(ev.target, "Đang ghi...", () => S.session.editWL((m) => m.setToday(text, pid)), "Đã ghi nhật ký hôm nay.");
+  };
 }
 
 function receiptsTab() {
@@ -401,6 +435,7 @@ $app.addEventListener("click", (ev) => {
     return;
   }
   if (t.id === "refresh") refresh(true);
+  else if (t.id === "today") openToday();
   else if (t.id === "assign") openAssign({ projectId: null, parentId: null });
   else if (t.id === "newReceipt") openNewReceipt();
   else if (t.id === "lock") { S.session = null; S.data = null; showUnlock(); }
@@ -661,9 +696,20 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
 function start() {
   const m = location.hash.match(/setup=([^&]+)/);
   const code = m ? decodeURIComponent(m[1]) : "";
-  if (loadStored() && !code) showUnlock();
+  if (code) history.replaceState(null, "", location.pathname);        // không để mã cài đặt nằm lại trên thanh địa chỉ / lối tắt
+  // Máy đã cài rồi thì LUÔN chỉ hỏi mã PIN, kể cả khi mở lại bằng đường dẫn cài đặt trong Zalo hay lối tắt có mã.
+  // Muốn cài lại (đổi người, mã mới): bấm «Quên mã PIN / đổi người dùng» trên màn hình nhập PIN.
+  if (loadStored()) showUnlock();
   else showSetup(code);
 }
 
+// Xin trình duyệt giữ dữ liệu lâu dài (không tự xóa khi máy thiếu bộ nhớ hoặc lâu không mở)
+async function keepStorage() {
+  try {
+    if (navigator.storage && navigator.storage.persist && !(await navigator.storage.persisted())) await navigator.storage.persist();
+  } catch (e) { /* bỏ qua */ }
+}
+
 start();
+if (loadStored()) keepStorage();
 window.__tbd = { S, VERSION };

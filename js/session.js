@@ -6,6 +6,7 @@ import { Drive } from "./drive.js";
 import { UserError } from "./base.js";
 import { ProjectTracking } from "./pt.js";
 import { Receipts } from "./receipts.js";
+import { Worklog } from "./worklog.js";
 import { compressImage } from "./image.js";
 
 const STORE_KEY = "tbd_mobile_v1";
@@ -159,6 +160,19 @@ export class Session {
   async readRC() {
     const { data } = await this.drive.load("expense_receipts");
     return new Receipts(data, this.user, this.directory);
+  }
+
+  async readWL() {
+    const { data } = await this.drive.load("worklog");
+    return new Worklog(data, this.user);
+  }
+
+  async editWL(fn) {
+    return this.drive.edit("worklog", async (data) => {
+      const wl = new Worklog(data, this.user);
+      const value = await fn(wl);
+      return { data: wl.dirty ? wl.data : null, value };
+    });
   }
 
   async editPT(fn) {

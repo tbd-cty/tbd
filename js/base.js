@@ -15,6 +15,7 @@ export function todayIso(date = new Date()) {
 // Mức quyền theo vai trò (trích core/auth.py PERMISSIONS cho các module điện thoại dùng). 0 không thấy, 1 xem, 2 sửa, 3 duyệt.
 const PERMS = {
   project_tracking: { director: 3, dept_head: 2, team_leader: 2, worker: 2 },
+  worklog: { director: 3, dept_head: 2, team_leader: 2, worker: 2, staff: 2, purchasing_head: 2, purchaser: 2, storekeeper: 2 },
   expense_receipts: { director: 3, dept_head: 2, team_leader: 2, worker: 2, staff: 2, purchasing_head: 2, purchaser: 2, storekeeper: 2 },
 };
 
