@@ -556,32 +556,41 @@ function photoPicker(files) {
     for (const u of photoPicker.urls || []) URL.revokeObjectURL(u);
     photoPicker.urls = files.map((f) => URL.createObjectURL(f));
     wrap.innerHTML = files.map((f, i) => `<div class="thumb"><img src="${photoPicker.urls[i]}" alt=""><button data-rm="${i}" aria-label="Bỏ ảnh">×</button></div>`).join("")
-      + `<button class="addphoto" id="addPhoto">+ Chụp / chọn ảnh</button>`;
+      + `<button class="addphoto" id="addPhoto">📷 Chụp ảnh</button><button class="addphoto" id="addGallery">🖼 Chọn từ thư viện</button>`;
     wrap.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => { files.splice(+b.dataset.rm, 1); paint(); }));
-    document.getElementById("addPhoto").onclick = () => document.getElementById("file").click();
+    document.getElementById("addPhoto").onclick = () => document.getElementById("file").click();                  // mở thẳng máy ảnh
+    document.getElementById("addGallery").onclick = () => document.getElementById("fileGallery").click();         // mở thư viện ảnh (chọn được nhiều ảnh)
   };
-  document.getElementById("file").onchange = (ev) => {
-    for (const f of ev.target.files) if (files.length < 10) files.push(f);
+  const onPick = (ev) => {
+    let skipped = 0;
+    for (const f of ev.target.files) {
+      if (files.length >= 10) { skipped++; continue; }
+      if (f.type && !f.type.startsWith("image/")) { skipped++; continue; }                                         // chỉ nhận ảnh
+      files.push(f);
+    }
     ev.target.value = "";
+    if (skipped) toast("Chỉ nhận tối đa 10 ảnh và đúng định dạng ảnh; các tệp thừa đã bị bỏ qua.", true);
     paint();
   };
+  document.getElementById("file").onchange = onPick;
+  document.getElementById("fileGallery").onchange = onPick;
   paint();
 }
 
 function openNewReceipt() {
   const files = [];
-  openSheet("Gửi hóa đơn", `<p class="hint">Chụp rõ cả tờ hóa đơn (nhiều trang thì chụp nhiều ảnh), ghi mua cho việc gì rồi bấm Gửi. Trưởng phòng sẽ chọn dự án và xác nhận.</p>
+  openSheet("Gửi hóa đơn", `<p class="hint">Chụp rõ cả tờ hóa đơn (nhiều trang thì chụp nhiều ảnh) hoặc chọn ảnh đã có trong thư viện, ghi mua cho việc gì rồi bấm Gửi. Trưởng phòng sẽ chọn dự án và xác nhận.</p>
     <input type="file" id="file" accept="image/*" capture="environment" multiple class="hidden">
+    <input type="file" id="fileGallery" accept="image/*" multiple class="hidden">
     <div class="thumbs" id="thumbs"></div>
     <label class="field" for="note">Mua cho việc gì?</label>
     <textarea class="inp" id="note" maxlength="500" placeholder="Ví dụ: Mua 20m dây 2.5 đấu tủ A - xưởng AB2"></textarea>
     <p class="err" id="prog"></p>
     <button class="btn" id="send">Gửi hóa đơn</button>`);
   photoPicker(files);
-  document.getElementById("file").click();
   document.getElementById("send").onclick = (ev) => {
     const note = document.getElementById("note").value;
-    if (!files.length) { toast("Hãy chụp ít nhất một ảnh hóa đơn.", true); return; }
+    if (!files.length) { toast("Hãy chụp hoặc chọn ít nhất một ảnh hóa đơn.", true); return; }
     if (!note.trim()) { toast("Hãy ghi mua cho việc gì.", true); return; }
     const prog = document.getElementById("prog");
     runEdit(ev.target, "Đang gửi...", () => S.session.submitReceipt(note, files, (i, n) => {
@@ -636,7 +645,8 @@ function openReceipt(id) {
   }
   if (a.includes("resubmit")) {
     form += `<div class="section">Gửi lại</div><input type="file" id="file" accept="image/*" capture="environment" multiple class="hidden">
-      <p class="hint">Chụp thêm ảnh (nếu cần), sửa ghi chú rồi gửi lại.</p><div class="thumbs" id="thumbs"></div>
+      <input type="file" id="fileGallery" accept="image/*" multiple class="hidden">
+      <p class="hint">Chụp hoặc chọn thêm ảnh từ thư viện (nếu cần), sửa ghi chú rồi gửi lại.</p><div class="thumbs" id="thumbs"></div>
       <label class="field" for="note">Mua cho việc gì?</label><textarea class="inp" id="note">${esc(r.note)}</textarea>
       <p class="err" id="prog"></p><button class="btn" id="resend">Gửi lại</button>`;
   }

@@ -1,6 +1,6 @@
 // sw.js - Lưu sẵn giao diện để ứng dụng mở nhanh và mở được khi sóng yếu. Dữ liệu (Google Drive) KHÔNG lưu ở đây.
 // Đổi CACHE mỗi khi phát hành bản mới để điện thoại tải giao diện mới.
-const CACHE = "tbd-2026.10.29";
+const CACHE = "tbd-2026.11.02b";
 const SHELL = ["./", "index.html", "css/app.css", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png",
   "js/app.js", "js/base.js", "js/crypto.js", "js/drive.js", "js/image.js", "js/pt.js", "js/receipts.js", "js/scrypt.js", "js/session.js", "js/worklog.js"];
 

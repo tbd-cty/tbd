@@ -59,6 +59,7 @@ export class Receipts extends ModuleData {
   }
 
   visible(r) {
+    if (r.state === "confirmed" && this.user.role === "purchasing_head") return true;       // Trưởng phòng vật tư (làm kế toán) xem hóa đơn đã xác nhận để lập phiếu chi
     return r.submitter === this.me || this.mayReview(r);
   }
 

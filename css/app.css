@@ -115,7 +115,7 @@ main { padding: 12px 16px calc(84px + env(safe-area-inset-bottom)); max-width: 6
 .thumb { position: relative; width: 92px; height: 92px; border-radius: 10px; overflow: hidden; background: var(--chip); border: 1px solid var(--line); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
 .thumb button { position: absolute; top: 2px; right: 2px; border: 0; border-radius: 12px; width: 26px; height: 26px; background: rgba(0, 0, 0, .6); color: #fff; }
-.addphoto { width: 92px; height: 92px; border-radius: 10px; border: 2px dashed var(--line); background: none; color: var(--primary); font-size: 13px; }
+.addphoto { width: 92px; height: 92px; border-radius: 10px; border: 2px dashed var(--line); background: none; color: var(--primary); font-size: 13px; padding: 4px; }
 .photo-full { width: 100%; border-radius: 10px; margin: 6px 0; background: var(--chip); min-height: 120px; display: block; }
 .amount { font-size: 22px; font-weight: 700; text-align: right; }
 .total { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
