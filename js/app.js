@@ -200,9 +200,10 @@ async function refresh(force = false) {
   render();
   try {
     await S.session.refreshUser();
-    const [pt, rc, wl] = await Promise.all([S.session.readPT(), S.session.readRC(),
-      S.session.user.role === "director" ? null : S.session.readWL().catch(() => null)]);
-    S.data = { pt, rc, wl };
+    const [pt, rc, wl, at] = await Promise.all([S.session.readPT(), S.session.readRC(),
+      S.session.user.role === "director" ? null : S.session.readWL().catch(() => null),
+      S.session.user.role === "team_leader" ? S.session.readAT().catch(() => null) : null]);
+    S.data = { pt, rc, wl, at };
     S.loadedAt = Date.now();
     S.error = "";
   } catch (e) {
@@ -321,12 +322,70 @@ function todayCard() {
   }
   const p = e.project_id ? S.data.pt.myProjects().find((x) => x.id === e.project_id) : null;
   const w = e.project_id ? (p ? `${p.code} ${p.name}` : e.project_id) : "Việc ngoài dự án";
+  const crew = S.data.at ? S.data.at.myDay(todayIso()) : null;
+  const crewNote = crew ? ` · chấm công ${crew.entries.length + 1} người${crew.state === "confirmed" ? " (đã xác nhận)" : ""}` : (S.data.at ? " · chưa chấm công công nhân" : "");
   return `<button class="card" id="today"><div class="tag green">Nhật ký hôm nay · ghi lúc ${fmtTime(e.updated_at).slice(6)}</div>
-    <div class="title">${esc(e.text)}</div><div class="meta">${esc(w)} · bấm để sửa</div></button>`;
+    <div class="title">${esc(e.text)}</div><div class="meta">${esc(w)}${crewNote} · bấm để sửa</div></button>`;
+}
+
+function crewRows(at, day) {
+  const marked = new Map((day ? day.entries : []).map((x) => [x.person_id, x]));
+  const locked = day && (day.state === "confirmed" || at.locked(day.date.slice(0, 7)));
+  const rows = at.people().map((p) => {
+    const m = marked.get(p.id), ot = m ? m.overtime : 0;
+    return `<div class="card crew" data-pid="${esc(p.id)}"><label class="crewname"><input type="checkbox" class="c-present" ${m ? "checked" : ""} ${locked ? "disabled" : ""}> ${esc(p.name)} <span class="meta">(${p.kind === "official" ? "chính thức" : "thời vụ"})</span></label>
+      <div class="crewot"><label><input type="checkbox" class="c-half" ${ot === 0.5 ? "checked" : ""} ${locked ? "disabled" : ""}> Tăng ca ½ công</label>
+      <label><input type="checkbox" class="c-full" ${ot === 1 ? "checked" : ""} ${locked ? "disabled" : ""}> Tăng ca 1 công</label></div></div>`;
+  }).join("");
+  const lead = `<div class="card crew" data-lead="1"><div class="crewname">Tôi (Trưởng nhóm) · đi làm khi ghi nhật ký</div>
+    <div class="crewot"><label><input type="checkbox" class="c-half" ${day && day.leader_overtime === 0.5 ? "checked" : ""} ${locked ? "disabled" : ""}> Tăng ca ½ công</label>
+    <label><input type="checkbox" class="c-full" ${day && day.leader_overtime === 1 ? "checked" : ""} ${locked ? "disabled" : ""}> Tăng ca 1 công</label></div></div>`;
+  return { html: lead + (rows || `<p class="empty">Chưa có công nhân nào. Bấm «+ Thêm công nhân» (mỗi dòng một tên).</p>`), locked };
+}
+
+function collectCrew() {
+  const entries = [];
+  let leaderOt = 0;
+  for (const el of document.querySelectorAll("#crew .crew")) {
+    const half = el.querySelector(".c-half").checked, full = el.querySelector(".c-full").checked;
+    const ot = full ? 1 : half ? 0.5 : 0;
+    if (el.dataset.lead) { leaderOt = ot; continue; }
+    if (el.querySelector(".c-present").checked || ot) entries.push({ person_id: el.dataset.pid, overtime: ot });
+  }
+  return { entries, leaderOt };
+}
+
+function wireCrew() {
+  for (const el of document.querySelectorAll("#crew .crew")) {
+    const half = el.querySelector(".c-half"), full = el.querySelector(".c-full"), present = el.querySelector(".c-present");
+    half.onchange = () => { if (half.checked) { full.checked = false; if (present) present.checked = true; } };         // tăng ca ½ công hoặc 1 công: chọn một
+    full.onchange = () => { if (full.checked) { half.checked = false; if (present) present.checked = true; } };
+  }
+}
+
+function openAddPeople() {
+  openSheet("Thêm công nhân", `<label class="field" for="npnames">Họ tên (mỗi dòng một người)</label>
+    <textarea class="inp" id="npnames" rows="5" placeholder="Nguyễn Văn A&#10;Trần Văn B"></textarea>
+    <label class="field" for="npkind">Loại</label><select class="inp" id="npkind"><option value="seasonal">Thời vụ</option><option value="official">Chính thức</option></select>
+    <button class="btn" id="npsave">Thêm</button>`, () => openToday());
+  document.getElementById("npsave").onclick = async (ev) => {
+    const done = busy(ev.target, "Đang thêm...");
+    try {
+      const names = document.getElementById("npnames").value, kind = document.getElementById("npkind").value;
+      await S.session.editAT((m) => m.addPeople(names, kind));
+      toast("Đã thêm công nhân.");
+      S.data.at = await S.session.readAT();
+      openToday();
+    } catch (e) {
+      done();
+      toast(friendly(e), true);
+    }
+  };
 }
 
 function openToday() {
   const wl = S.data.wl, e = wl.mineToday();
+  const at = S.data.at, day = at ? at.myDay(todayIso()) : null;
   const projects = S.data.pt.myProjects();
   const recent = wl.mine(7).filter((x) => !e || x.id !== e.id);
   openSheet("Nhật ký hôm nay", `<p class="hint">Hôm nay ${fmtDate(todayIso())}. Ghi lại trong ngày thì nội dung được cập nhật.</p>
@@ -334,13 +393,26 @@ function openToday() {
       ${projects.map((p) => `<option value="${esc(p.id)}" ${e && e.project_id === p.id ? "selected" : ""}>${esc(p.code)} ${esc(p.name)}</option>`).join("")}</select>
     <label class="field" for="wtext">Hôm nay tôi đang làm</label>
     <textarea class="inp" id="wtext" maxlength="300" placeholder="Ví dụ: Đấu tủ điện A tại xưởng AB2">${esc(e ? e.text : "")}</textarea>
-    <button class="btn" id="wsave">Ghi</button>
+    ${at ? `<div class="section">Chấm công hôm nay</div><p class="hint">Tick người đi làm; tăng ca chọn ½ công hoặc 1 công. Ngày nào không ghi nhật ký thì cả tổ tính nghỉ.</p>
+      <div id="crew">${crewRows(at, day).html}</div><button class="btn secondary" id="npadd">+ Thêm công nhân</button>` : ""}
+    <button class="btn" id="wsave">${at ? "Ghi nhật ký và chấm công" : "Ghi"}</button>
     ${recent.length ? `<div class="section">Các ngày trước</div>${recent.map((x) => `<div class="card"><div class="meta">${fmtDate(x.date)}</div><div class="note">${esc(x.text)}</div></div>`).join("")}` : ""}`);
   document.getElementById("wsave").onclick = (ev) => {
     const text = document.getElementById("wtext").value, pid = document.getElementById("wproj").value;
     if (!text.trim()) { toast("Hãy ghi hôm nay bạn đang làm gì.", true); return; }
-    runEdit(ev.target, "Đang ghi...", () => S.session.editWL((m) => m.setToday(text, pid)), "Đã ghi nhật ký hôm nay.");
+    if (!at) { runEdit(ev.target, "Đang ghi...", () => S.session.editWL((m) => m.setToday(text, pid)), "Đã ghi nhật ký hôm nay."); return; }
+    const { entries, leaderOt } = collectCrew();
+    const proj = projects.find((p) => p.id === pid);
+    runEdit(ev.target, "Đang ghi...", async () => {
+      await S.session.editAT((m) => m.saveDay(todayIso(), pid, proj ? `${proj.code} ${proj.name}` : "", text, entries, leaderOt));
+      await S.session.editWL((m) => m.setToday(text, pid));                                           // nhật ký hôm nay: Giám đốc thấy ở mục Theo dõi
+    }, "Đã ghi nhật ký và chấm công.");
   };
+  if (at) {
+    wireCrew();
+    document.getElementById("npadd").onclick = openAddPeople;
+    if (crewRows(at, day).locked) { toast("Công hôm nay đã được xác nhận hoặc tháng đã chốt, không sửa được.", true); document.getElementById("wsave").disabled = true; }
+  }
 }
 
 function receiptsTab() {

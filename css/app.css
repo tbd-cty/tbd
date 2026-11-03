@@ -132,3 +132,11 @@ main { padding: 12px 16px calc(84px + env(safe-area-inset-bottom)); max-width: 6
 .bigtitle { font-size: 18px; font-weight: 700; margin: 4px 0; }
 .danger-text { color: var(--danger); }
 .mt { margin-top: 18px; }
+
+/* chấm công trong màn hình nhật ký của Trưởng nhóm */
+.crew { padding: 10px 12px; }
+.crewname { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.crewname input, .crewot input { width: 22px; height: 22px; accent-color: var(--primary); }
+.crewot { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 6px; font-size: 14px; }
+.crewot label { display: flex; align-items: center; gap: 6px; }
+.btn.secondary { background: transparent; color: var(--primary); border: 2px solid var(--primary); margin: 8px 0; }

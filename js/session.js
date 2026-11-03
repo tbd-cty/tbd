@@ -7,6 +7,7 @@ import { UserError } from "./base.js";
 import { ProjectTracking } from "./pt.js";
 import { Receipts } from "./receipts.js";
 import { Worklog } from "./worklog.js";
+import { Attendance } from "./attendance.js";
 import { compressImage } from "./image.js";
 
 const STORE_KEY = "tbd_mobile_v1";
@@ -165,6 +166,19 @@ export class Session {
   async readWL() {
     const { data } = await this.drive.load("worklog");
     return new Worklog(data, this.user);
+  }
+
+  async readAT() {
+    const { data } = await this.drive.load("attendance");
+    return new Attendance(data, this.user, this.directory);
+  }
+
+  async editAT(fn) {
+    return this.drive.edit("attendance", async (data) => {
+      const at = new Attendance(data, this.user, this.directory);
+      const value = await fn(at);
+      return { data: at.dirty ? at.data : null, value };
+    });
   }
 
   async editWL(fn) {

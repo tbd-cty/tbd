@@ -17,6 +17,7 @@ const PERMS = {
   project_tracking: { director: 3, dept_head: 2, team_leader: 2, worker: 2 },
   worklog: { director: 3, dept_head: 2, team_leader: 2, worker: 2, staff: 2, purchasing_head: 2, purchaser: 2, storekeeper: 2 },
   expense_receipts: { director: 3, dept_head: 2, team_leader: 2, worker: 2, staff: 2, purchasing_head: 2, purchaser: 2, storekeeper: 2 },
+  attendance: { director: 3, dept_head: 2, team_leader: 2, purchasing_head: 2 },
 };
 
 export function level(user, module) {
