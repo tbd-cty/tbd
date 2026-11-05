@@ -5,7 +5,7 @@ import { UserError, todayIso } from "./base.js";
 import { CHAIN, ROLE_LABELS, STAGE_LABELS, STATE_LABELS } from "./pt.js";
 import { STATE_LABELS as RC_LABELS, money, parseAmount } from "./receipts.js";
 
-export const VERSION = "2026.10.29";
+export const VERSION = "2026.11.08";
 const $app = document.getElementById("app");
 const $sheet = document.getElementById("sheet");
 const $toast = document.getElementById("toast");
@@ -264,6 +264,7 @@ function rcNotifText(ev, me) {
 const PENDING_HEAD = {
   assign: "Dự án mới chưa giao Trưởng phòng", review_quote: "Báo giá chờ Giám đốc duyệt", negotiate: "Dự án đang đàm phán",
   start_plan: "Dự án mới giao cho bạn", make_quote: "Đến lượt bạn lập báo giá", quote_returned: "Giám đốc trả lại báo giá",
+  new_project: "Dự án mới giao cho bạn: giao việc cho Trưởng nhóm",
   todo: "Việc được giao", returned: "Việc bị trả lại làm lại", to_confirm: "Chờ bạn xác nhận",
   survey_todo: "Phiếu khảo sát được giao", survey_returned: "Phiếu khảo sát bị trả lại", survey_to_confirm: "Phiếu khảo sát chờ bạn xác nhận",
   receipt_to_review: "Hóa đơn chờ bạn xác nhận", receipt_returned: "Hóa đơn bị trả lại",
@@ -463,7 +464,7 @@ function moreTab() {
     <div class="kv"><b>Vai trò:</b> ${esc(ROLE_LABELS[u.role] || u.role)}</div><div class="kv"><b>Cấp trên:</b> ${esc(nm(u.supervisor) || "-")}</div></div>
     <button class="btn ghost" id="lock">Khóa ứng dụng</button>
     <button class="btn ghost" id="logout">Đăng xuất khỏi điện thoại này</button>
-    <p class="hint mt">Bản ${VERSION}. Đổi mật khẩu, phiếu khảo sát, báo giá: dùng phần mềm trên máy tính.</p>`;
+    <p class="hint mt">Bản ${VERSION}. Đổi mật khẩu, báo giá, danh mục: dùng phần mềm trên máy tính.</p>`;
 }
 
 function badgeCounts() {

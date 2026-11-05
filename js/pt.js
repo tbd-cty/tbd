@@ -9,18 +9,23 @@ export const SPEC = { id: "project_tracking", schema: 3, label: "Dự án",
 
 export const OPEN = "open", REPORTED = "reported", DONE = "done";
 export const STATE_LABELS = { open: "Đang làm", reported: "Chờ xác nhận", done: "Đã hoàn thành" };
+// Dòng chảy dự án MỚI (khớp config.NEW_PROJECT_FLOW của máy tính): khảo sát và báo giá làm ngoài phần mềm, sáu giai đoạn chuyển bằng tay + «Hủy».
+// Chỉ các bài kiểm thử dòng chảy cũ đặt globalThis.TBD_OLD_FLOW = true.
+export const NEW_FLOW = !globalThis.TBD_OLD_FLOW;
+const LEGACY_STAGE_MAP = { new: "surveying", planning: "surveying", quote_review: "quoting", procurement: "construction", maintenance: "acceptance", closed: "acceptance" };
 export const STAGE_LABELS = {
   new: "Mới tạo", planning: "Đang triển khai", surveying: "Đang khảo sát", quoting: "Đang lập báo giá",
   quote_review: "Chờ Giám đốc duyệt giá", negotiating: "Đã gửi khách / đàm phán", ordered: "Đã đặt hàng",
   procurement: "Đang mua vật tư", construction: "Đang thi công", acceptance: "Nghiệm thu / chờ thanh toán",
   maintenance: "Bảo trì sau nghiệm thu", closed: "Kết thúc", lost: "Khách từ chối / hủy",
+  ...(NEW_FLOW ? { quoting: "Đã khảo sát - đang lập báo giá", negotiating: "Đã gửi báo giá", ordered: "Đã có PO", acceptance: "Đã nghiệm thu", lost: "Hủy" } : {}),
 };
-const TERMINAL = new Set(["closed", "lost"]);
+const TERMINAL = new Set(NEW_FLOW ? ["lost"] : ["closed", "lost"]);
 export const CHAIN = { director: "dept_head", dept_head: "team_leader", team_leader: "worker" };
 export const ROLE_LABELS = { director: "Giám đốc", dept_head: "Trưởng phòng", team_leader: "Trưởng nhóm", worker: "Công nhân / Kỹ thuật viên",
   staff: "Nhân viên", purchasing_head: "Trưởng phòng vật tư", purchaser: "Nhân viên mua hàng", storekeeper: "Thủ kho" };
-const DIRECTOR_STAGE_ITEMS = { new: "assign", quote_review: "review_quote", negotiating: "negotiate" };
-const MANAGER_STAGE_ITEMS = { planning: "start_plan", quoting: "make_quote" };
+const DIRECTOR_STAGE_ITEMS = NEW_FLOW ? {} : { new: "assign", quote_review: "review_quote", negotiating: "negotiate" };
+const MANAGER_STAGE_ITEMS = NEW_FLOW ? {} : { planning: "start_plan", quoting: "make_quote" };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function checkDate(value, label) {
@@ -34,6 +39,12 @@ export class ProjectTracking extends ModuleData {
   constructor(data, user, directory) {
     super(data, user, SPEC);
     this.directory = Object.fromEntries((directory || []).filter((u) => u.active !== false).map((u) => [u.username, u]));
+    if (NEW_FLOW) {                                           // dự án cũ mang mã giai đoạn cũ: đổi sang giai đoạn mới tương ứng (giống máy tính)
+      for (const p of Object.values(this.col("projects"))) {
+        const mapped = LEGACY_STAGE_MAP[p.status];
+        if (mapped) { p.legacy_status = p.status; p.status = mapped; }
+      }
+    }
   }
 
   get isDirector() {
@@ -41,7 +52,7 @@ export class ProjectTracking extends ModuleData {
   }
 
   standalone() {
-    return { id: "", code: "", name: "Việc ngoài dự án", status: "planning", manager: "", status_history: [], created_at: "" };
+    return { id: "", code: "", name: "Việc ngoài dự án", status: NEW_FLOW ? "construction" : "planning", manager: "", status_history: [], created_at: "" };
   }
 
   isManager(p) {
@@ -304,8 +315,12 @@ export class ProjectTracking extends ModuleData {
         out.push({ ...base, kind, ref_type: "project", ref_id: p.id, title: p.name, other: last.by || "", since: last.at || p.created_at,
           due: "", overdue: false, note, pending_children: 0 });
       }
+      if (NEW_FLOW && p.manager === me && !this.isDirector && !this.active("tasks", (r) => r.project_id === p.id).length) {
+        out.push({ ...base, kind: "new_project", ref_type: "project", ref_id: p.id, title: p.name, other: hist.length ? hist[0].by : "", since: p.created_at,
+          due: "", overdue: false, note: "", pending_children: 0 });                                   // dự án mới giao: giao việc cho Trưởng nhóm
+      }
       taskItems(p.id, base);
-      for (const sv of this.active("surveys", (r) => r.project_id === p.id)) {
+      for (const sv of NEW_FLOW ? [] : this.active("surveys", (r) => r.project_id === p.id)) {          // khảo sát làm ngoài phần mềm
         if (sv.assignee === me && sv.state === OPEN) {
           const back = ProjectTracking.lastEvent(sv, "Trả lại làm lại");
           out.push({ ...base, kind: back ? "survey_returned" : "survey_todo", ref_type: "survey", ref_id: sv.id, title: sv.title, other: sv.assigner,
@@ -318,7 +333,7 @@ export class ProjectTracking extends ModuleData {
     }
     taskItems("", { project_id: "", project_code: "", project_name: "Việc ngoài dự án" });
     const order = { assign: 0, review_quote: 0, negotiate: 0, to_confirm: 0, survey_to_confirm: 0, quote_returned: 0,
-      returned: 1, survey_returned: 1, start_plan: 1, make_quote: 1, todo: 2, survey_todo: 2 };
+      returned: 1, survey_returned: 1, start_plan: 1, make_quote: 1, new_project: 1, todo: 2, survey_todo: 2 };
     return out.sort((a, b) => order[a.kind] - order[b.kind] || (a.since < b.since ? -1 : a.since > b.since ? 1 : 0));
   }
 
@@ -333,7 +348,7 @@ export class ProjectTracking extends ModuleData {
         if (h.by !== me && h.from && h.at >= cutoff) rows.push({ ...base, at: h.at, by: h.by, kind: "stage", ref_type: "project", ref_id: p.id,
           title: p.name, assigner: "", assignee: "", to: h.to, note: h.note });
       }
-      for (const [c, refType] of [["tasks", "task"], ["surveys", "survey"]]) {
+      for (const [c, refType] of (NEW_FLOW ? [["tasks", "task"]] : [["tasks", "task"], ["surveys", "survey"]])) {
         for (const rec of this.active(c, (r) => r.project_id === p.id)) {
           if (!(boss || rec.assigner === me || rec.assignee === me)) continue;
           for (const h of rec.history || []) {
