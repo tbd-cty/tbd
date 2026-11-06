@@ -61,6 +61,7 @@ export class ProjectTracking extends ModuleData {
 
   involved(p) {
     if (this.isDirector || this.isManager(p)) return true;
+    if (NEW_FLOW && this.user.role === "team_leader" && p.manager && p.manager === ((this.directory[this.me] || {}).supervisor || this.user.supervisor)) return true;       // Trưởng nhóm thấy mọi dự án do Trưởng phòng (cấp trên trực tiếp) phụ trách
     for (const c of ["tasks", "surveys"]) {
       for (const r of this.active(c, (r) => r.project_id === p.id)) if (r.assignee === this.me || r.assigner === this.me) return true;
     }

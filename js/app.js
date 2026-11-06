@@ -5,7 +5,7 @@ import { UserError, todayIso } from "./base.js";
 import { CHAIN, ROLE_LABELS, STAGE_LABELS, STATE_LABELS } from "./pt.js";
 import { STATE_LABELS as RC_LABELS, money, parseAmount } from "./receipts.js";
 
-export const VERSION = "2026.11.08";
+export const VERSION = "2026.11.09";
 const $app = document.getElementById("app");
 const $sheet = document.getElementById("sheet");
 const $toast = document.getElementById("toast");
