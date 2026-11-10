@@ -8,6 +8,7 @@ import { ProjectTracking } from "./pt.js";
 import { Receipts } from "./receipts.js";
 import { Worklog } from "./worklog.js";
 import { Attendance } from "./attendance.js";
+import { FinanceAccounting } from "./finance.js";
 import { compressImage } from "./image.js";
 
 const STORE_KEY = "tbd_mobile_v1";
@@ -166,6 +167,19 @@ export class Session {
   async readWL() {
     const { data } = await this.drive.load("worklog");
     return new Worklog(data, this.user);
+  }
+
+  async readFA() {
+    const { data } = await this.drive.load("finance_accounting");
+    return new FinanceAccounting(data, this.user, this.directory);
+  }
+
+  async editFA(fn) {
+    return this.drive.edit("finance_accounting", async (data) => {
+      const fa = new FinanceAccounting(data, this.user, this.directory);
+      const value = await fn(fa);
+      return { data: fa.dirty ? fa.data : null, value };
+    });
   }
 
   async readAT() {

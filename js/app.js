@@ -4,8 +4,9 @@ import { Session, loadStored, seenAt, setSeenAt, wipe } from "./session.js";
 import { UserError, todayIso } from "./base.js";
 import { CHAIN, ROLE_LABELS, STAGE_LABELS, STATE_LABELS } from "./pt.js";
 import { STATE_LABELS as RC_LABELS, money, parseAmount } from "./receipts.js";
+import { FinanceAccounting, INCOME_KINDS, METHODS as FA_METHODS, parseMoney } from "./finance.js";
 
-export const VERSION = "2026.11.09";
+export const VERSION = "2026.11.10";
 const $app = document.getElementById("app");
 const $sheet = document.getElementById("sheet");
 const $toast = document.getElementById("toast");
@@ -24,6 +25,7 @@ const KNOWN = new Set(["UserError", "DriveError", "OfflineError", "ConflictError
 const friendly = (e) => (e instanceof UserError || (e && e.constructor && KNOWN.has(e.constructor.name)) ? e.message : `Có lỗi không mong đợi: ${e && e.message ? e.message : e}`);
 
 const ICON = {
+  fin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 10v4M18 10v4"/></svg>',
   tasks: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>',
   receipt: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>',
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
@@ -200,10 +202,12 @@ async function refresh(force = false) {
   render();
   try {
     await S.session.refreshUser();
-    const [pt, rc, wl, at] = await Promise.all([S.session.readPT(), S.session.readRC(),
-      S.session.user.role === "director" ? null : S.session.readWL().catch(() => null),
-      S.session.user.role === "team_leader" ? S.session.readAT().catch(() => null) : null]);
-    S.data = { pt, rc, wl, at };
+    const role = S.session.user.role;
+    const [pt, rc, wl, at, fa] = await Promise.all([S.session.readPT(), S.session.readRC(),
+      role === "director" ? null : S.session.readWL().catch(() => null),
+      role === "team_leader" ? S.session.readAT().catch(() => null) : null,
+      role === "director" || role === "purchasing_head" ? S.session.readFA().catch(() => null) : null]);
+    S.data = { pt, rc, wl, at, fa };
     S.loadedAt = Date.now();
     S.error = "";
   } catch (e) {
@@ -219,6 +223,16 @@ function pendingItems() {
   const items = [];
   for (const it of S.data.pt.myPending()) items.push({ src: "pt", ...it });
   for (const it of S.data.rc.myPending()) items.push({ src: "rc", ...it });
+  const fa = S.data.fa;
+  if (fa) {
+    for (const it of fa.myPending()) items.push({ src: "fa", ...it });
+    if (fa.isAccountant) {                                   // hóa đơn khẩn đã xác nhận mà chưa có phiếu chi hoàn ứng
+      const links = fa.receiptLinks();
+      for (const r of S.data.rc.list()) {
+        if (r.state === "confirmed" && !links[r.id]) items.push({ src: "fa", kind: "receipt_to_voucher", id: r.id, content: r.note, total: r.amount, project_label: r.project_label, since: r.reviewed_at || r.submitted_at });
+      }
+    }
+  }
   return items;
 }
 
@@ -228,7 +242,18 @@ function notifications() {
   const out = [];
   for (const ev of S.data.pt.myNotifications()) out.push({ at: ev.at, text: ptNotifText(ev, me), open: ev.ref_type === "task" ? { task: ev.ref_id } : null });
   for (const ev of S.data.rc.myNotifications()) out.push({ at: ev.at, text: rcNotifText(ev, me), open: { receipt: ev.id } });
+  if (S.data.fa) for (const ev of S.data.fa.myNotifications()) out.push({ at: ev.at, text: faNotifText(ev), open: { voucher: ev.id } });
   return out.sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 60);
+}
+
+function faNotifText(ev) {
+  const by = nm(ev.by);
+  return {
+    "Gửi duyệt": `${by} gửi phiếu chi ${ev.id} chờ duyệt: «${ev.content}» (${money(ev.total)} đ)`,
+    "Duyệt": `${by} đã duyệt phiếu chi ${ev.id} (${money(ev.total)} đ)`,
+    "Trả lại": `${by} trả lại phiếu chi ${ev.id} · Lý do: ${ev.note}`,
+    "Hủy phiếu": `${by} hủy phiếu chi ${ev.id} · Lý do: ${ev.note}`,
+  }[ev.event] || `${by}: ${ev.event} phiếu chi ${ev.id}`;
 }
 
 function where(code, name) {
@@ -268,12 +293,18 @@ const PENDING_HEAD = {
   todo: "Việc được giao", returned: "Việc bị trả lại làm lại", to_confirm: "Chờ bạn xác nhận",
   survey_todo: "Phiếu khảo sát được giao", survey_returned: "Phiếu khảo sát bị trả lại", survey_to_confirm: "Phiếu khảo sát chờ bạn xác nhận",
   receipt_to_review: "Hóa đơn chờ bạn xác nhận", receipt_returned: "Hóa đơn bị trả lại",
+  voucher_to_approve: "Phiếu chi chờ duyệt", voucher_returned: "Phiếu chi bị trả lại", voucher_to_pay: "Phiếu chi chờ ghi chi", receipt_to_voucher: "Hóa đơn cần lập phiếu chi",
 };
 
 function pendingCard(it) {
   const head = PENDING_HEAD[it.kind] || it.kind;
-  const red = it.overdue || ["returned", "survey_returned", "receipt_returned", "quote_returned"].includes(it.kind);
+  const red = it.overdue || ["returned", "survey_returned", "receipt_returned", "quote_returned", "voucher_returned"].includes(it.kind);
   const urgent = ["to_confirm", "survey_to_confirm", "receipt_to_review"].includes(it.kind);
+  if (it.src === "fa") {
+    const open = it.kind === "receipt_to_voucher" ? `data-open-receipt="${esc(it.id)}"` : `data-open-voucher="${esc(it.id)}"`;
+    return `<button class="card" ${open}><div class="tag ${red ? "red" : "amber"}">${head}</div><div class="title">${esc(it.content)}</div>
+      <div class="meta">${money(it.total)} đ · ${esc(it.project_label)}${it.reason ? ` · ${esc(it.reason)}` : ""}</div></button>`;
+  }
   if (it.src === "rc") {
     const line = it.kind === "receipt_to_review" ? `${nm(it.submitter)} · ${it.images} ảnh · ${fmtTime(it.since)}` : `Lý do: ${esc(it.note)}`;
     return `<button class="card" data-open-receipt="${esc(it.id)}"><div class="tag ${red ? "red" : "amber"}">${head}</div>
@@ -472,14 +503,17 @@ function badgeCounts() {
   const seen = S.session ? seenAt(S.session.user.username) : "";
   const unread = notifications().filter((n) => n.at > seen).length;
   const rcPending = S.data ? S.data.rc.myPending().length : 0;
-  return { pend: pend - rcPending, rc: rcPending, unread };
+  const faPending = S.data ? pendingItems().filter((i) => i.src === "fa").length : 0;
+  return { pend: pend - rcPending - faPending, rc: rcPending, fa: faPending, unread };
 }
 
 function render() {
   if (!S.session) return;
-  const counts = S.data ? badgeCounts() : { pend: 0, rc: 0, unread: 0 };
-  const titles = { tasks: "Việc của tôi", receipts: "Hóa đơn mua khẩn", notif: "Thông báo", more: "Tài khoản" };
-  const body = { tasks: tasksTab, receipts: receiptsTab, notif: notifTab, more: moreTab }[S.tab]();
+  const counts = S.data ? badgeCounts() : { pend: 0, rc: 0, fa: 0, unread: 0 };
+  const hasFin = !!(S.data && S.data.fa);
+  if (S.tab === "fin" && !hasFin) S.tab = "tasks";
+  const titles = { tasks: "Việc của tôi", receipts: "Hóa đơn mua khẩn", fin: "Tài chính", notif: "Thông báo", more: "Tài khoản" };
+  const body = { tasks: tasksTab, receipts: receiptsTab, fin: financeTab, notif: notifTab, more: moreTab }[S.tab]();
   const badge = (n) => (n ? `<span class="badge">${n > 99 ? "99+" : n}</span>` : "");
   const banner = S.error ? `<div class="banner">${esc(S.error)}</div>` : "";
   $app.innerHTML = `<header class="top"><h1>${titles[S.tab]}<span class="sub">${esc(S.session.user.full_name)}${S.loadedAt ? ` · cập nhật ${new Date(S.loadedAt).toTimeString().slice(0, 5)}` : ""}</span></h1>
@@ -488,9 +522,10 @@ function render() {
     <nav class="tabs">
       <button data-tab="tasks" class="${S.tab === "tasks" ? "on" : ""}">${ICON.tasks}Việc${badge(counts.pend)}</button>
       <button data-tab="receipts" class="${S.tab === "receipts" ? "on" : ""}">${ICON.receipt}Hóa đơn${badge(counts.rc)}</button>
+      ${hasFin ? `<button data-tab="fin" class="${S.tab === "fin" ? "on" : ""}">${ICON.fin}Tiền${badge(counts.fa)}</button>` : ""}
       <button data-tab="notif" class="${S.tab === "notif" ? "on" : ""}">${ICON.bell}Thông báo${badge(S.tab === "notif" ? 0 : counts.unread)}</button>
       <button data-tab="more" class="${S.tab === "more" ? "on" : ""}">${ICON.more}Tài khoản</button></nav>`;
-  try { if (navigator.setAppBadge) (counts.pend + counts.rc ? navigator.setAppBadge(counts.pend + counts.rc) : navigator.clearAppBadge()); } catch (e) { /* bỏ qua */ }
+  try { if (navigator.setAppBadge) (counts.pend + counts.rc + counts.fa ? navigator.setAppBadge(counts.pend + counts.rc + counts.fa) : navigator.clearAppBadge()); } catch (e) { /* bỏ qua */ }
 }
 
 $app.addEventListener("click", (ev) => {
@@ -499,18 +534,24 @@ $app.addEventListener("click", (ev) => {
   if (t.dataset.tab) { S.tab = t.dataset.tab; render(); window.scrollTo(0, 0); return; }
   if (t.dataset.seg) { S.taskSeg = t.dataset.seg; render(); return; }
   if (t.dataset.rcseg) { S.rcSeg = t.dataset.rcseg; render(); return; }
+  if (t.dataset.finseg) { S.finSeg = t.dataset.finseg; render(); return; }
+  if (t.dataset.openVoucher) { openVoucher(t.dataset.openVoucher); return; }
+  if (t.dataset.openIncome) { openIncome(t.dataset.openIncome); return; }
   if (t.dataset.openTask) { openTask(t.dataset.openTask); return; }
   if (t.dataset.openReceipt) { openReceipt(t.dataset.openReceipt); return; }
   if (t.dataset.notif) {
     const n = S.notifList[+t.dataset.notif];
     if (n && n.open && n.open.task) openTask(n.open.task);
     else if (n && n.open && n.open.receipt) openReceipt(n.open.receipt);
+    else if (n && n.open && n.open.voucher) openVoucher(n.open.voucher);
     return;
   }
   if (t.id === "refresh") refresh(true);
   else if (t.id === "today") openToday();
   else if (t.id === "assign") openAssign({ projectId: null, parentId: null });
   else if (t.id === "newReceipt") openNewReceipt();
+  else if (t.id === "newVoucher") openVoucherForm();
+  else if (t.id === "newIncome") openIncomeForm();
   else if (t.id === "lock") { S.session = null; S.data = null; showUnlock(); }
   else if (t.id === "logout") {
     if (confirm("Đăng xuất và xóa dữ liệu ứng dụng trên điện thoại này? Lần sau cần mã cài đặt để cài lại.")) { wipe(); S.session = null; S.data = null; showSetup(); }
@@ -724,6 +765,8 @@ function openReceipt(id) {
       <p class="err" id="prog"></p><button class="btn" id="resend">Gửi lại</button>`;
   }
   if (a.includes("cancel")) form += `<button class="btn ghost" id="cancel">Hủy hóa đơn này (gửi nhầm)</button>`;
+  const fa = S.data.fa;
+  if (fa && fa.isAccountant && r.state === "confirmed" && !fa.receiptLinks()[r.id]) form += `<button class="btn" id="refund">Lập phiếu chi hoàn ứng</button>`;
   const hist = (r.history || []).slice().reverse().map((h) => `<div>${fmtTime(h.at)} · ${esc(nm(h.by))}: ${esc(h.event)}${h.note ? ` - ${esc(h.note)}` : ""}</div>`).join("");
   openSheet(`Hóa đơn ${r.id}`, `${info}<div class="section">Ảnh hóa đơn (${r.images.length})</div><div id="photos"></div>${form}
     <div class="section">Lịch sử</div><div class="hist">${hist}</div>`);
@@ -760,9 +803,170 @@ function openReceipt(id) {
       }), "Đã gửi lại hóa đơn.");
     };
   }
+  const refund = document.getElementById("refund");
+  if (refund) refund.onclick = () => {                                       // hoàn ứng cho người gửi hóa đơn khẩn: điền sẵn dự án, số tiền, người nhận
+    openVoucherForm({ receipt_id: r.id, project_id: r.project_id, project_label: r.project_label, content: `Hoàn ứng ${r.id}: ${r.note}`.slice(0, 300), payee: nm(r.submitter),
+      amount_net: money(r.amount), method: "cash" });
+  };
   const cancel = document.getElementById("cancel");
   if (cancel) cancel.onclick = () => {
     if (confirm("Hủy hóa đơn này?")) runEdit(cancel, "Đang hủy...", () => S.session.editRC((m) => m.cancel(id)), "Đã hủy hóa đơn.");
+  };
+}
+
+// ---------------- Tài chính: Giám đốc duyệt phiếu chi; Trưởng phòng vật tư lập phiếu chi, ghi đã chi, phiếu thu ----------------
+const FA_TAG = { draft: "", pending: "amber", approved: "", paid: "green", cancelled: "red" };
+
+function financeTab() {
+  if (!S.data) return S.loading ? `<p class="empty">Đang tải...</p>` : "";
+  const fa = S.data.fa;
+  if (!fa) return `<p class="empty">Không mở được dữ liệu tài chính.</p>`;
+  const vcard = (v) => `<button class="card" data-open-voucher="${esc(v.id)}"><div class="tag ${v.returned ? "red" : FA_TAG[v.state]}">${v.id} · ${v.state_label}</div>
+    <div class="title">${esc(v.content)}</div><div class="meta">${money(v.total)} đ · ${esc(v.project_label)} · ${fmtDate(v.date).slice(0, 5)}</div></button>`;
+  const icard = (i) => `<button class="card" data-open-income="${esc(i.id)}"><div class="tag ${i.state === "active" ? "green" : "red"}">${i.id} · ${i.kind_label}</div>
+    <div class="title">${money(i.total)} đ</div><div class="meta">${esc(i.project_label)} · ${fmtDate(i.date).slice(0, 5)}${i.state === "active" ? "" : " · đã hủy"}</div></button>`;
+  const none = `<p class="empty">Chưa có.</p>`;
+  if (fa.isDirector) {
+    const all = fa.vouchers(), wait = all.filter((v) => v.state === "pending");
+    const seg = S.finSeg === "all" || (!S.finSeg && !wait.length) ? "all" : "wait";
+    return `<div class="seg"><button data-finseg="wait" class="${seg === "wait" ? "on" : ""}">Chờ duyệt (${wait.length})</button><button data-finseg="all" class="${seg === "all" ? "on" : ""}">Tất cả</button></div>`
+      + ((seg === "wait" ? wait : all).map(vcard).join("") || none);
+  }
+  const seg = S.finSeg === "pt" ? "pt" : "pc";
+  const head = `<div class="seg"><button data-finseg="pc" class="${seg === "pc" ? "on" : ""}">Phiếu chi</button><button data-finseg="pt" class="${seg === "pt" ? "on" : ""}">Phiếu thu</button></div>`;
+  if (seg === "pc") return `${head}<button class="big-action" id="newVoucher">${ICON.fin}<span>Phiếu chi</span></button>${fa.vouchers().map(vcard).join("") || none}`;
+  return `${head}<button class="big-action" id="newIncome">${ICON.fin}<span>Phiếu thu</span></button>${fa.incomes().map(icard).join("") || none}`;
+}
+
+const faKv = (k, v) => (v ? `<div class="kv"><b>${k}:</b> ${esc(v)}</div>` : "");
+
+function openVoucher(id) {
+  let v;
+  try { v = S.data.fa.voucher(id); } catch (e) { toast(friendly(e), true); return; }
+  const dir = S.data.fa.isDirector, a = v.actions;
+  const info = `<div class="box"><div class="tag ${v.returned ? "red" : FA_TAG[v.state]}">${v.id} · ${v.state_label}</div><div class="bigtitle">${esc(v.content)}</div>
+    <div class="kv"><b>Tổng:</b> ${money(v.total)} đ</div><div class="kv"><b>Chưa VAT:</b> ${money(v.amount_net)} · <b>VAT:</b> ${money(v.vat)}</div>
+    ${faKv("Dự án", v.project_label)}${faKv("Loại", v.category_name)}${faKv("Ngày", fmtDate(v.date))}${faKv("Nhà cung cấp", v.payee)}${faKv("Số HĐ", v.invoice_no)}
+    ${faKv("Hình thức", v.method_label)}${faKv("Lập bởi", nm(v.created_by))}${v.receipt_id ? faKv("Hoàn ứng", v.receipt_id) : ""}${v.paid_at ? faKv("Đã chi", fmtDate(v.paid_at)) : ""}${faKv("Ghi chú", v.note)}
+    ${v.returned ? `<div class="kv danger-text"><b>Trả lại:</b> ${esc(v.return_reason)}</div>` : ""}${v.state === "cancelled" ? `<div class="kv danger-text"><b>Đã hủy:</b> ${esc(v.cancel_reason)}</div>` : ""}</div>`;
+  let form = "";
+  if (dir && a.includes("approve")) {
+    form = `<button class="btn okc" id="vok">Duyệt</button><label class="field" for="vreason">Trả lại: lý do</label><textarea class="inp" id="vreason"></textarea><button class="btn danger" id="vback">Trả lại</button>`;
+  } else if (!dir) {
+    if (a.includes("edit")) form += `<button class="btn" id="vedit">Sửa và gửi duyệt</button>`;
+    if (a.includes("withdraw")) form += `<button class="btn ghost" id="vwithdraw">Rút về nháp</button>`;
+    if (a.includes("pay")) form += `<label class="field" for="vpaid">Ngày chi</label><input class="inp" id="vpaid" type="date" value="${todayIso()}"><button class="btn okc" id="vpay">Đã chi</button>`;
+    if (a.includes("cancel")) form += `<button class="btn ghost" id="vcancel">Hủy phiếu</button>`;
+  }
+  const hist = (v.history || []).slice().reverse().map((h) => `<div>${fmtTime(h.at)} · ${esc(nm(h.by))}: ${esc(h.event)}${h.note ? ` - ${esc(h.note)}` : ""}</div>`).join("");
+  openSheet(`Phiếu ${v.id}`, `${info}${form}<div class="section">Lịch sử</div><div class="hist">${hist}</div>`);
+  const on = (id2, fn) => { const el = document.getElementById(id2); if (el) el.onclick = fn; };
+  on("vok", (ev) => runEdit(ev.target, "Đang duyệt...", () => S.session.editFA((m) => m.approve(id)), "Đã duyệt."));
+  on("vback", (ev) => {
+    const reason = document.getElementById("vreason").value.trim();
+    if (!reason) { toast("Hãy nhập lý do trả lại.", true); return; }
+    runEdit(ev.target, "Đang lưu...", () => S.session.editFA((m) => m.returnVoucher(id, reason)), "Đã trả lại.");
+  });
+  on("vedit", () => { closeSheet(); openVoucherForm({}, v); });
+  on("vwithdraw", (ev) => runEdit(ev.target, "Đang lưu...", () => S.session.editFA((m) => m.withdraw(id)), "Đã rút về nháp."));
+  on("vpay", (ev) => runEdit(ev.target, "Đang lưu...", () => S.session.editFA((m) => m.markPaid(id, document.getElementById("vpaid").value)), "Đã ghi chi."));
+  on("vcancel", (ev) => {
+    const reason = (prompt("Lý do hủy phiếu:") || "").trim();
+    if (!reason) { toast("Hãy nhập lý do hủy.", true); return; }
+    runEdit(ev.target, "Đang hủy...", () => S.session.editFA((m) => m.cancel(id, reason)), "Đã hủy phiếu.");
+  });
+}
+
+function wireMoney(ids, sum) {
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    el.oninput = () => {
+      const d = el.value.replace(/\D/g, "").replace(/^0+/, "");
+      el.value = d ? money(+d) : "";
+      sum();
+    };
+  }
+}
+
+const faOptions = (items, sel) => items.map((o) => `<option value="${esc(o[0])}" ${o[0] === sel ? "selected" : ""}>${esc(o[1])}</option>`).join("");
+
+/** Phiếu chi: MỘT nút «Gửi duyệt» (lưu rồi gửi duyệt cùng lúc). seed = điền sẵn (hoàn ứng); existing = phiếu nháp hoặc bị trả lại đang sửa. */
+function openVoucherForm(seed = {}, existing = null) {
+  const fa = S.data.fa, cats = fa.categories();
+  if (!cats.length) { toast("Chưa có loại chi phí: mở phần mềm máy tính một lần.", true); return; }
+  const v = existing ? { ...existing, amount_net: money(existing.amount_net), vat: existing.vat ? money(existing.vat) : "" } : seed;
+  const projects = FinanceAccounting.projectLabels(S.data.pt);
+  if (v.project_id && !projects.some((p) => p.id === v.project_id)) projects.push({ id: v.project_id, label: v.project_label || v.project_id });
+  const cat = v.category_id || (cats.find((c) => c.name === "Vật tư") || cats[0]).id;
+  openSheet(existing ? `Sửa ${existing.id}` : "Phiếu chi", `
+    <div class="pair"><div><label class="field" for="fd">Ngày</label><input class="inp" id="fd" type="date" value="${esc(v.date || todayIso())}"></div>
+      <div><label class="field" for="fm">Chi bằng</label><select class="inp" id="fm">${faOptions(Object.entries(FA_METHODS), v.method || "transfer")}</select></div></div>
+    <label class="field" for="fc">Loại</label><select class="inp" id="fc">${faOptions(cats.map((c) => [c.id, c.name]), cat)}</select>
+    <label class="field" for="fp">Dự án</label><select class="inp" id="fp"><option value="">Chi phí chung</option>
+      ${projects.map((p) => `<option value="${esc(p.id)}" data-label="${esc(p.label)}" ${p.id === v.project_id ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select>
+    <label class="field" for="ft">Nội dung</label><input class="inp" id="ft" maxlength="300" value="${esc(v.content || "")}">
+    <label class="field" for="fy">Nhà cung cấp / người nhận</label><input class="inp" id="fy" maxlength="120" value="${esc(v.payee || "")}">
+    <div class="pair"><div><label class="field" for="fn">Chưa VAT</label><input class="inp amount" id="fn" inputmode="numeric" placeholder="0" value="${esc(v.amount_net || "")}"></div>
+      <div><label class="field" for="fv">VAT</label><input class="inp amount" id="fv" inputmode="numeric" placeholder="0" value="${esc(v.vat || "")}"></div></div>
+    <div class="total"><span>Tổng</span><b id="fsum">0 đ</b></div>
+    <div class="pair"><div><label class="field" for="fi">Số HĐ</label><input class="inp" id="fi" maxlength="60" value="${esc(v.invoice_no || "")}"></div>
+      <div><label class="field" for="fo">Ghi chú</label><input class="inp" id="fo" maxlength="500" value="${esc(v.note || "")}"></div></div>
+    ${v.receipt_id ? `<p class="hint">Hoàn ứng ${esc(v.receipt_id)}</p>` : ""}
+    <button class="btn" id="fsend">Gửi duyệt</button>`);
+  const sum = () => {
+    try { document.getElementById("fsum").textContent = `${money(parseMoney(document.getElementById("fn").value, "x", true) + parseMoney(document.getElementById("fv").value, "x", true))} đ`; }
+    catch (e) { document.getElementById("fsum").textContent = "—"; }
+  };
+  wireMoney(["fn", "fv"], sum);
+  sum();
+  document.getElementById("fsend").onclick = (ev) => {
+    const sel = document.getElementById("fp"), g = (i) => document.getElementById(i).value;
+    const fields = { date: g("fd"), category_id: g("fc"), project_id: sel.value, project_label: sel.value ? sel.selectedOptions[0].dataset.label : "", content: g("ft"), payee: g("fy"),
+      invoice_no: g("fi"), amount_net: g("fn"), vat: g("fv"), method: g("fm"), note: g("fo"), receipt_id: v.receipt_id || "" };
+    runEdit(ev.target, "Đang gửi...", () => S.session.editFA((m) => m.submit(m.saveVoucher(existing ? existing.id : null, fields).id)), "Đã gửi duyệt.");
+  };
+}
+
+function openIncomeForm() {
+  const projects = FinanceAccounting.projectLabels(S.data.pt);
+  openSheet("Phiếu thu", `
+    <div class="pair"><div><label class="field" for="id">Ngày</label><input class="inp" id="id" type="date" value="${todayIso()}"></div>
+      <div><label class="field" for="im">Thu bằng</label><select class="inp" id="im">${faOptions(Object.entries(FA_METHODS), "transfer")}</select></div></div>
+    <label class="field" for="ip">Dự án</label><select class="inp" id="ip"><option value="">— Chọn —</option>
+      ${projects.map((p) => `<option value="${esc(p.id)}" data-label="${esc(p.label)}">${esc(p.label)}</option>`).join("")}</select>
+    <label class="field" for="ik">Loại thu</label><select class="inp" id="ik">${faOptions(Object.entries(INCOME_KINDS), "final")}</select>
+    <div class="pair"><div><label class="field" for="in">Chưa VAT</label><input class="inp amount" id="in" inputmode="numeric" placeholder="0"></div>
+      <div><label class="field" for="iv">VAT</label><input class="inp amount" id="iv" inputmode="numeric" placeholder="0"></div></div>
+    <div class="total"><span>Tổng</span><b id="isum">0 đ</b></div>
+    <div class="pair"><div><label class="field" for="ii">Số HĐ</label><input class="inp" id="ii" maxlength="60"></div>
+      <div><label class="field" for="io">Ghi chú</label><input class="inp" id="io" maxlength="500"></div></div>
+    <button class="btn" id="isave">Ghi thu</button>`);
+  const sum = () => {
+    try { document.getElementById("isum").textContent = `${money(parseMoney(document.getElementById("in").value, "x", true) + parseMoney(document.getElementById("iv").value, "x", true))} đ`; }
+    catch (e) { document.getElementById("isum").textContent = "—"; }
+  };
+  wireMoney(["in", "iv"], sum);
+  document.getElementById("isave").onclick = (ev) => {
+    const sel = document.getElementById("ip"), g = (i) => document.getElementById(i).value;
+    const fields = { date: g("id"), project_id: sel.value, project_label: sel.value ? sel.selectedOptions[0].dataset.label : "", kind: g("ik"), amount_net: g("in"), vat: g("iv"), method: g("im"),
+      invoice_no: g("ii"), note: g("io") };
+    runEdit(ev.target, "Đang ghi...", () => S.session.editFA((m) => m.saveIncome(fields)), "Đã ghi phiếu thu.");
+  };
+}
+
+function openIncome(id) {
+  let i;
+  try { i = S.data.fa.incomes().find((x) => x.id === id); } catch (e) { toast(friendly(e), true); return; }
+  if (!i) { toast("Không tìm thấy phiếu thu.", true); return; }
+  const info = `<div class="box"><div class="tag ${i.state === "active" ? "green" : "red"}">${i.id} · ${i.kind_label} · ${i.state_label}</div><div class="bigtitle">${money(i.total)} đ</div>
+    <div class="kv"><b>Chưa VAT:</b> ${money(i.amount_net)} · <b>VAT:</b> ${money(i.vat)}</div>${faKv("Dự án", i.project_label)}${faKv("Ngày", fmtDate(i.date))}${faKv("Hình thức", i.method_label)}
+    ${faKv("Số HĐ", i.invoice_no)}${faKv("Ghi bởi", nm(i.created_by))}${faKv("Ghi chú", i.note)}${i.state === "cancelled" ? `<div class="kv danger-text"><b>Đã hủy:</b> ${esc(i.cancel_reason)}</div>` : ""}</div>`;
+  openSheet(`Phiếu thu ${i.id}`, `${info}${i.actions.includes("cancel") ? `<button class="btn ghost" id="icancel">Hủy phiếu thu</button>` : ""}`);
+  const c = document.getElementById("icancel");
+  if (c) c.onclick = (ev) => {
+    const reason = (prompt("Lý do hủy phiếu thu:") || "").trim();
+    if (!reason) { toast("Hãy nhập lý do hủy.", true); return; }
+    runEdit(ev.target, "Đang hủy...", () => S.session.editFA((m) => m.cancelIncome(id, reason)), "Đã hủy phiếu thu.");
   };
 }
 
