@@ -12,6 +12,32 @@ const MAX_AMOUNT = 10_000_000_000;
 const GENERAL_LABEL = "Chi phí chung";
 const sq = (v) => String(v == null ? "" : v).split(/\s+/).filter(Boolean).join(" ");
 
+/** Chữ để so khớp: giống normalize ở máy tính (chữ thường, bỏ dấu tiếng Việt, ký tự lạ thành khoảng trắng, gộp khoảng trắng). */
+export function key(v) {
+  const t = String(v == null ? "" : v).toLowerCase().replace(/(\d),(?=\d)/g, "$1.").replace(/đ/g, "d").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return t.replace(/[^a-z0-9.,/x+-]+/g, " ").trim();
+}
+
+/** Người nhận tiền của phiếu; phiếu lập trước khi có ô này lấy tên ở ô «Nhà cung cấp». */
+export const recipientOf = (r) => String(r.recipient || r.payee || "").trim();
+
+/** Tổng tiền CẦN CHI (đã duyệt, chưa ghi đã chi, gồm VAT) theo từng người nhận tiền; text = chữ gõ vào ô tìm. Giống recipient_totals ở máy tính. */
+export function recipientTotals(vouchers, text = "") {
+  const needle = key(text), groups = new Map();
+  for (const v of [...vouchers].sort((a, b) => (a.date === b.date ? (a.id < b.id ? -1 : 1) : a.date < b.date ? -1 : 1))) {
+    if (v.state !== "approved") continue;
+    const name = recipientOf(v), k = key(name);
+    if (needle && !k.includes(needle)) continue;
+    if (!groups.has(k)) groups.set(k, { key: k, name: name || "(chưa ghi người nhận)", count: 0, total: 0, ids: [] });
+    const g = groups.get(k);
+    g.name = name || g.name;
+    g.count += 1;
+    g.total += v.total;
+    g.ids.push(v.id);
+  }
+  return [...groups.values()].sort((a, b) => b.total - a.total || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
 /** Số tiền đồng: nhận 1250000, '1.250.000', '1 250 000'. Số nguyên không âm. */
 export function parseMoney(value, label, allowEmpty = false) {
   let number;
@@ -83,7 +109,7 @@ export class FinanceAccounting extends ModuleData {
     let actions = [];
     if (this.isDirector) actions = { pending: ["approve", "return", "cancel"], approved: ["cancel"] }[r.state] || [];
     else if (this.isAccountant) actions = { draft: ["edit", "submit", "cancel"], pending: ["withdraw", "cancel"], approved: ["pay", "cancel"] }[r.state] || [];
-    return { ...r, state_label: returned ? "Bị trả lại" : STATE_LABELS[r.state], returned, method_label: METHODS[r.method] || r.method, actions };
+    return { ...r, state_label: returned ? "Bị trả lại" : STATE_LABELS[r.state], returned, method_label: METHODS[r.method] || r.method, recipient: recipientOf(r), actions };
   }
 
   vouchers() {
@@ -92,6 +118,16 @@ export class FinanceAccounting extends ModuleData {
 
   voucher(id) {
     return this.view(this.raw("vouchers", id));
+  }
+
+  /** Tên người nhận tiền đã dùng ở phiếu chưa hủy, để gợi ý khi gõ (mỗi người một lần, cách viết ở phiếu mới nhất), xếp theo tên. */
+  recipientNames() {
+    const seen = new Map();
+    for (const r of this.active("vouchers", (r) => r.state !== "cancelled").sort((a, b) => (a.date === b.date ? (a.id < b.id ? -1 : 1) : a.date < b.date ? -1 : 1))) {
+      const name = recipientOf(r);
+      if (name) seen.set(key(name), name);
+    }
+    return [...seen.values()].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
   }
 
   /** {mã hóa đơn khẩn: mã phiếu chi đang dùng nó} (không tính phiếu đã hủy). */
@@ -124,7 +160,7 @@ export class FinanceAccounting extends ModuleData {
     this.checkReceiptFree(receiptId, excludeId);
     return {
       date: isoDate(fields.date, "Ngày chứng từ"), category_id: category.id, category_name: category.name, project_id: projectId, project_label: projectLabel,
-      content: text(sq(fields.content), "Nội dung chi", true, 300), payee: text(sq(fields.payee), "Nhà cung cấp / người nhận", false, 120),
+      content: text(sq(fields.content), "Nội dung chi", true, 300), recipient: text(sq(fields.recipient), "Người nhận tiền", true, 120), payee: text(sq(fields.payee), "Nhà cung cấp", false, 120),
       invoice_no: text(sq(fields.invoice_no), "Số hóa đơn", false, 60), amount_net: net, vat, total: net + vat, method, note: text(sq(fields.note), "Ghi chú", false, 500), receipt_id: receiptId,
     };
   }
@@ -136,6 +172,7 @@ export class FinanceAccounting extends ModuleData {
       const record = this.raw("vouchers", id);
       if (record.state !== "draft") throw new UserError(`Phiếu ${id} đang «${STATE_LABELS[record.state]}», không sửa được. Muốn sửa hãy rút lại về Nháp (phiếu chờ duyệt) hoặc nhờ Giám đốc trả lại.`);
       const clean = this.clean(fields, id);
+      if (!("invoice_no" in fields)) clean.invoice_no = record.invoice_no || "";                 // giao diện mới không còn ô Số hóa đơn: giữ số cũ của phiếu
       return this.view(this.update("vouchers", id, { ...clean, history: this.event(record, "Sửa", clean.content) }));
     }
     const clean = this.clean(fields, null);

@@ -4,9 +4,9 @@ import { Session, loadStored, seenAt, setSeenAt, wipe } from "./session.js";
 import { UserError, todayIso } from "./base.js";
 import { CHAIN, ROLE_LABELS, STAGE_LABELS, STATE_LABELS } from "./pt.js";
 import { STATE_LABELS as RC_LABELS, money, parseAmount } from "./receipts.js";
-import { FinanceAccounting, INCOME_KINDS, METHODS as FA_METHODS, parseMoney } from "./finance.js";
+import { FinanceAccounting, INCOME_KINDS, METHODS as FA_METHODS, key as faKey, parseMoney, recipientTotals } from "./finance.js";
 
-export const VERSION = "2026.11.10";
+export const VERSION = "2026.11.11";
 const $app = document.getElementById("app");
 const $sheet = document.getElementById("sheet");
 const $toast = document.getElementById("toast");
@@ -805,7 +805,7 @@ function openReceipt(id) {
   }
   const refund = document.getElementById("refund");
   if (refund) refund.onclick = () => {                                       // hoàn ứng cho người gửi hóa đơn khẩn: điền sẵn dự án, số tiền, người nhận
-    openVoucherForm({ receipt_id: r.id, project_id: r.project_id, project_label: r.project_label, content: `Hoàn ứng ${r.id}: ${r.note}`.slice(0, 300), payee: nm(r.submitter),
+    openVoucherForm({ receipt_id: r.id, project_id: r.project_id, project_label: r.project_label, content: `Hoàn ứng ${r.id}: ${r.note}`.slice(0, 300), recipient: nm(r.submitter), payee: "",
       amount_net: money(r.amount), method: "cash" });
   };
   const cancel = document.getElementById("cancel");
@@ -822,7 +822,7 @@ function financeTab() {
   const fa = S.data.fa;
   if (!fa) return `<p class="empty">Không mở được dữ liệu tài chính.</p>`;
   const vcard = (v) => `<button class="card" data-open-voucher="${esc(v.id)}"><div class="tag ${v.returned ? "red" : FA_TAG[v.state]}">${v.id} · ${v.state_label}</div>
-    <div class="title">${esc(v.content)}</div><div class="meta">${money(v.total)} đ · ${esc(v.project_label)} · ${fmtDate(v.date).slice(0, 5)}</div></button>`;
+    <div class="title">${esc(v.content)}</div><div class="meta">${money(v.total)} đ · ${esc(v.recipient || "—")} · ${fmtDate(v.date).slice(0, 5)}</div></button>`;
   const icard = (i) => `<button class="card" data-open-income="${esc(i.id)}"><div class="tag ${i.state === "active" ? "green" : "red"}">${i.id} · ${i.kind_label}</div>
     <div class="title">${money(i.total)} đ</div><div class="meta">${esc(i.project_label)} · ${fmtDate(i.date).slice(0, 5)}${i.state === "active" ? "" : " · đã hủy"}</div></button>`;
   const none = `<p class="empty">Chưa có.</p>`;
@@ -830,15 +830,48 @@ function financeTab() {
     const all = fa.vouchers(), wait = all.filter((v) => v.state === "pending");
     const seg = S.finSeg === "all" || (!S.finSeg && !wait.length) ? "all" : "wait";
     return `<div class="seg"><button data-finseg="wait" class="${seg === "wait" ? "on" : ""}">Chờ duyệt (${wait.length})</button><button data-finseg="all" class="${seg === "all" ? "on" : ""}">Tất cả</button></div>`
-      + ((seg === "wait" ? wait : all).map(vcard).join("") || none);
+      + (seg === "wait" ? (wait.map(vcard).join("") || none) : finSearchBlock(all));
   }
   const seg = S.finSeg === "pt" ? "pt" : "pc";
   const head = `<div class="seg"><button data-finseg="pc" class="${seg === "pc" ? "on" : ""}">Phiếu chi</button><button data-finseg="pt" class="${seg === "pt" ? "on" : ""}">Phiếu thu</button></div>`;
-  if (seg === "pc") return `${head}<button class="big-action" id="newVoucher">${ICON.fin}<span>Phiếu chi</span></button>${fa.vouchers().map(vcard).join("") || none}`;
+  if (seg === "pc") return `${head}<button class="big-action" id="newVoucher">${ICON.fin}<span>Phiếu chi</span></button>${finSearchBlock(fa.vouchers())}`;
   return `${head}<button class="big-action" id="newIncome">${ICON.fin}<span>Phiếu thu</span></button>${fa.incomes().map(icard).join("") || none}`;
 }
 
 const faKv = (k, v) => (v ? `<div class="kv"><b>${k}:</b> ${esc(v)}</div>` : "");
+
+// Ô tìm phiếu chi: lọc theo người nhận tiền (và nội dung, số phiếu...), kèm tổng CẦN CHI (đã duyệt, chưa chi) của người đó
+const finMatch = (v, q) => !q || faKey([v.id, v.content, v.recipient, v.payee, v.invoice_no, v.project_label, v.category_name, v.note].join(" ")).includes(faKey(q));
+
+function finListHtml(all, q) {
+  const list = all.filter((v) => finMatch(v, q));
+  return list.length ? list.map((v) => `<button class="card" data-open-voucher="${esc(v.id)}"><div class="tag ${v.returned ? "red" : FA_TAG[v.state]}">${v.id} · ${v.state_label}</div>
+    <div class="title">${esc(v.content)}</div><div class="meta">${money(v.total)} đ · ${esc(v.recipient || "—")} · ${fmtDate(v.date).slice(0, 5)}</div></button>`).join("") : `<p class="empty">Không có phiếu nào.</p>`;
+}
+
+function finOwedHtml(all, q) {
+  const groups = recipientTotals(all, q), total = groups.reduce((s, g) => s + g.total, 0), count = groups.reduce((s, g) => s + g.count, 0);
+  let html = `<div class="box"><div class="total"><span>Cần chi${q ? ` · ${esc(q)}` : ""}</span><b>${money(total)} đ</b></div><div class="meta">Đã duyệt, chưa chi · ${count} phiếu</div>`;
+  if (q) {
+    html += groups.slice(0, 8).map((g) => `<div class="total"><span>${esc(g.name)} (${g.count})</span><b>${money(g.total)} đ</b></div>`).join("");
+    if (groups.length > 8) html += `<div class="meta">... và ${groups.length - 8} người khác</div>`;
+  }
+  return `${html}</div>`;
+}
+
+function finSearchBlock(all) {
+  const q = S.finQ || "";
+  return `<input class="inp" id="finq" type="search" placeholder="Tìm người nhận, nội dung..." autocomplete="off" value="${esc(q)}">
+    <div id="finowed">${finOwedHtml(all, q)}</div><div id="finlist">${finListHtml(all, q)}</div>`;
+}
+
+$app.addEventListener("input", (ev) => {                                    // gõ vào ô tìm: chỉ vẽ lại danh sách và tổng, không vẽ lại cả màn hình (giữ bàn phím)
+  if (ev.target.id !== "finq" || !S.data || !S.data.fa) return;
+  S.finQ = ev.target.value.trim();
+  const all = S.data.fa.vouchers();
+  document.getElementById("finowed").innerHTML = finOwedHtml(all, S.finQ);
+  document.getElementById("finlist").innerHTML = finListHtml(all, S.finQ);
+});
 
 function openVoucher(id) {
   let v;
@@ -846,7 +879,7 @@ function openVoucher(id) {
   const dir = S.data.fa.isDirector, a = v.actions;
   const info = `<div class="box"><div class="tag ${v.returned ? "red" : FA_TAG[v.state]}">${v.id} · ${v.state_label}</div><div class="bigtitle">${esc(v.content)}</div>
     <div class="kv"><b>Tổng:</b> ${money(v.total)} đ</div><div class="kv"><b>Chưa VAT:</b> ${money(v.amount_net)} · <b>VAT:</b> ${money(v.vat)}</div>
-    ${faKv("Dự án", v.project_label)}${faKv("Loại", v.category_name)}${faKv("Ngày", fmtDate(v.date))}${faKv("Nhà cung cấp", v.payee)}${faKv("Số HĐ", v.invoice_no)}
+    ${faKv("Người nhận", v.recipient)}${faKv("Dự án", v.project_label)}${faKv("Loại", v.category_name)}${faKv("Ngày", fmtDate(v.date))}${faKv("Nhà cung cấp", v.payee && v.payee !== v.recipient ? v.payee : "")}${faKv("Số HĐ", v.invoice_no)}
     ${faKv("Hình thức", v.method_label)}${faKv("Lập bởi", nm(v.created_by))}${v.receipt_id ? faKv("Hoàn ứng", v.receipt_id) : ""}${v.paid_at ? faKv("Đã chi", fmtDate(v.paid_at)) : ""}${faKv("Ghi chú", v.note)}
     ${v.returned ? `<div class="kv danger-text"><b>Trả lại:</b> ${esc(v.return_reason)}</div>` : ""}${v.state === "cancelled" ? `<div class="kv danger-text"><b>Đã hủy:</b> ${esc(v.cancel_reason)}</div>` : ""}</div>`;
   let form = "";
@@ -905,11 +938,12 @@ function openVoucherForm(seed = {}, existing = null) {
     <label class="field" for="fp">Dự án</label><select class="inp" id="fp"><option value="">Chi phí chung</option>
       ${projects.map((p) => `<option value="${esc(p.id)}" data-label="${esc(p.label)}" ${p.id === v.project_id ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</select>
     <label class="field" for="ft">Nội dung</label><input class="inp" id="ft" maxlength="300" value="${esc(v.content || "")}">
-    <label class="field" for="fy">Nhà cung cấp / người nhận</label><input class="inp" id="fy" maxlength="120" value="${esc(v.payee || "")}">
+    <label class="field" for="fr">Người nhận tiền</label><input class="inp" id="fr" maxlength="120" list="recipientList" autocomplete="off" value="${esc(v.recipient || "")}">
+    <datalist id="recipientList">${fa.recipientNames().map((n) => `<option value="${esc(n)}"></option>`).join("")}</datalist>
     <div class="pair"><div><label class="field" for="fn">Chưa VAT</label><input class="inp amount" id="fn" inputmode="numeric" placeholder="0" value="${esc(v.amount_net || "")}"></div>
       <div><label class="field" for="fv">VAT</label><input class="inp amount" id="fv" inputmode="numeric" placeholder="0" value="${esc(v.vat || "")}"></div></div>
     <div class="total"><span>Tổng</span><b id="fsum">0 đ</b></div>
-    <div class="pair"><div><label class="field" for="fi">Số HĐ</label><input class="inp" id="fi" maxlength="60" value="${esc(v.invoice_no || "")}"></div>
+    <div class="pair"><div><label class="field" for="fy">Nhà cung cấp</label><input class="inp" id="fy" maxlength="120" value="${esc(v.payee || "")}"></div>
       <div><label class="field" for="fo">Ghi chú</label><input class="inp" id="fo" maxlength="500" value="${esc(v.note || "")}"></div></div>
     ${v.receipt_id ? `<p class="hint">Hoàn ứng ${esc(v.receipt_id)}</p>` : ""}
     <button class="btn" id="fsend">Gửi duyệt</button>`);
@@ -921,8 +955,9 @@ function openVoucherForm(seed = {}, existing = null) {
   sum();
   document.getElementById("fsend").onclick = (ev) => {
     const sel = document.getElementById("fp"), g = (i) => document.getElementById(i).value;
-    const fields = { date: g("fd"), category_id: g("fc"), project_id: sel.value, project_label: sel.value ? sel.selectedOptions[0].dataset.label : "", content: g("ft"), payee: g("fy"),
-      invoice_no: g("fi"), amount_net: g("fn"), vat: g("fv"), method: g("fm"), note: g("fo"), receipt_id: v.receipt_id || "" };
+    const fields = { date: g("fd"), category_id: g("fc"), project_id: sel.value, project_label: sel.value ? sel.selectedOptions[0].dataset.label : "", content: g("ft"), recipient: g("fr"), payee: g("fy"),
+      amount_net: g("fn"), vat: g("fv"), method: g("fm"), note: g("fo"), receipt_id: v.receipt_id || "" };
+    if (existing && existing.invoice_no) fields.invoice_no = existing.invoice_no;                      // phiếu cũ có số hóa đơn: giữ nguyên
     runEdit(ev.target, "Đang gửi...", () => S.session.editFA((m) => m.submit(m.saveVoucher(existing ? existing.id : null, fields).id)), "Đã gửi duyệt.");
   };
 }
