@@ -3,6 +3,7 @@
 
 import fs from "fs";
 
+globalThis.TBD_OLD_FLOW = process.env.TBD_OLD_FLOW === "1";        // test_mobile_compat.py chạy dòng chảy CŨ; test_mobile_flow.py chạy dòng chảy MỚI
 const [step, rawArgs] = process.argv.slice(2);
 const args = JSON.parse(rawArgs);
 
@@ -91,6 +92,72 @@ if (step === "setup") {
   const r = await s.resubmitReceipt(args.id, null, [fileOf(args.photo, "d.jpg")]);
   out.state_after = r.state;
   out.images_after = r.images.length;
+} else if (step === "tn_diary") {
+  const s = await unlocked();
+  const saved = await s.editWL((m) => m.setToday(args.text, args.project || ""));
+  out.entry = { id: saved.id, user: saved.user, date: saved.date, source: saved.source, text: saved.text };
+  const wl = await s.readWL();
+  out.mine = wl.mineToday() && wl.mineToday().text;
+} else if (step === "tn_attendance") {
+  const s = await unlocked();
+  out.people_before = (await s.readAT()).people().length;
+  const added = await s.editAT((m) => m.addPeople("Vũ Quang Giới\nNguyễn Công Lê", "seasonal"));
+  out.added = added.map((p) => ({ id: p.id, name: p.name, leader: p.leader, kind: p.kind, active: p.active }));
+  out.dup = await err(() => s.editAT((m) => m.addPeople("vu quang gioi")));
+  const ids = (await s.readAT()).people().map((p) => p.id);                  // xếp theo tên: Nguyễn Công Lê, Vũ Quang Giới
+  const day = await s.editAT((m) => m.saveDay(args.day, args.project, args.label, "Đi dây tủ A", [{ person_id: ids[0], overtime: 0.5 }, { person_id: ids[1], overtime: 0 }], 1));
+  out.day = { id: day.id, date: day.date, state: day.state, entries: day.entries.length, leader_overtime: day.leader_overtime, project_label: day.project_label };
+  out.bad_ot = await err(() => s.editAT((m) => m.saveDay(args.day, "", "", "x", [{ person_id: ids[0], overtime: 0.75 }], 0)));
+  out.future = await err(() => s.editAT((m) => m.saveDay(args.future, "", "", "x", [], 0)));
+  out.old = await err(() => s.editAT((m) => m.saveDay(args.old, "", "", "x", [], 0)));
+  out.again = (await s.editAT((m) => m.saveDay(args.day, args.project, args.label, "Đi dây tủ A và B", [{ person_id: ids[1], overtime: 0 }], 0))).id;
+} else if (step === "tn_attendance_after") {
+  const s = await unlocked();
+  const d = (await s.readAT()).myDay(args.day);
+  out.state = d.state;
+  out.confirmed_by = d.confirmed_by;
+  out.edit_error = await err(() => s.editAT((m) => m.saveDay(args.day, "", "", "sửa lại", [], 0)));
+} else if (step === "pt_pending") {
+  const s = await unlocked();
+  const pt = await s.readPT();
+  const { STAGE_LABELS } = await import("../js/pt.js");
+  out.pending = pt.myPending().map((i) => ({ kind: i.kind, ref_id: i.ref_id }));
+  out.projects = pt.myProjects().map((p) => ({ id: p.id, status: p.status }));
+  out.labels = Object.fromEntries(out.projects.map((p) => [p.id, STAGE_LABELS[p.status]]));
+} else if (step === "fa_do") {
+  const s = await unlocked();
+  const ops = {
+    save_submit: (m, a) => m.submit(m.saveVoucher(a.id || null, a.fields).id),
+    save: (m, a) => m.saveVoucher(a.id || null, a.fields),
+    submit: (m, a) => m.submit(a.id),
+    withdraw: (m, a) => m.withdraw(a.id),
+    approve: (m, a) => m.approve(a.id),
+    return: (m, a) => m.returnVoucher(a.id, a.reason),
+    pay: (m, a) => m.markPaid(a.id, a.date || null),
+    cancel: (m, a) => m.cancel(a.id, a.reason),
+    income: (m, a) => m.saveIncome(a.fields),
+    income_cancel: (m, a) => m.cancelIncome(a.id, a.reason),
+  };
+  out.error = null;
+  if (args.op) {
+    try {
+      const v = await s.editFA((m) => ops[args.op](m, args));
+      out.result = { id: v.id, state: v.state, total: v.total, actions: v.actions };
+    } catch (e) {
+      out.error = e.message;
+    }
+  }
+  const fa = await s.readFA();
+  out.pending = fa.myPending().map((i) => ({ kind: i.kind, id: i.id }));
+  out.notes = fa.myNotifications().map((n) => [n.event, n.id]);
+  out.vouchers = fa.vouchers().map((v) => ({ id: v.id, state: v.state, total: v.total, actions: v.actions, returned: v.returned, label: v.state_label }));
+  out.incomes = fa.incomes().map((i) => ({ id: i.id, state: i.state, total: i.total, actions: i.actions }));
+  out.links = fa.receiptLinks();
+  out.categories = fa.categories().map((c) => c.name);
+  const { recipientTotals } = await import("../js/finance.js");
+  out.names = fa.recipientNames();
+  out.owed = recipientTotals(fa.vouchers(), args.q || "").map((g) => ({ name: g.name, count: g.count, total: g.total, ids: g.ids }));
+  out.search = fa.vouchers().length;
 } else {
   throw new Error(`Bước lạ: ${step}`);
 }

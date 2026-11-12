@@ -6,7 +6,7 @@ import { CHAIN, ROLE_LABELS, STAGE_LABELS, STATE_LABELS } from "./pt.js";
 import { STATE_LABELS as RC_LABELS, money, parseAmount } from "./receipts.js";
 import { FinanceAccounting, INCOME_KINDS, METHODS as FA_METHODS, key as faKey, parseMoney, recipientTotals } from "./finance.js";
 
-export const VERSION = "2026.11.11";
+export const VERSION = "2026.11.16";
 const $app = document.getElementById("app");
 const $sheet = document.getElementById("sheet");
 const $toast = document.getElementById("toast");
